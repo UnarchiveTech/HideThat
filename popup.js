@@ -1,300 +1,314 @@
 document.addEventListener('DOMContentLoaded', function() {
-  // Platform tab switching
-  const platformTabs = document.querySelectorAll('.platform-tab-button');
-  const platformContents = document.querySelectorAll('.platform-content');
-  let currentPlatform = 'instagram';
+  // --- STATE MANAGEMENT ---
+  let state = {
+    activeTab: 'instagram', // 'instagram', 'twitter', 'linkedin', or 'global'
+    settings: {
+      instagram: {},
+      twitter: {},
+      linkedin: {},
+      global: {}
+    },
+    isRelevantPage: false,
+  };
 
-  platformTabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      platformTabs.forEach(t => t.classList.remove('active'));
-      platformContents.forEach(c => c.classList.remove('active'));
-      tab.classList.add('active');
-      const platform = tab.dataset.platform;
-      document.getElementById(`${platform}-tab`).classList.add('active');
-      currentPlatform = platform;
-      loadProfileInfo();
-    });
-  });
-
-  // Instagram elements
-  const usernameBlur = document.getElementById('usernameBlur');
-  const fullNameBlur = document.getElementById('fullNameBlur');
-  const customWordsBlur = document.getElementById('customWordsBlur');
-  const usernameBlurMode = document.getElementById('usernameBlurMode');
-  const usernameReplaceMode = document.getElementById('usernameReplaceMode');
-  const fullNameBlurMode = document.getElementById('fullNameBlurMode');
-  const fullNameReplaceMode = document.getElementById('fullNameReplaceMode');
-  const customWordsBlurMode = document.getElementById('customWordsBlurMode');
-  const customWordsReplaceMode = document.getElementById('customWordsReplaceMode');
-  const usernameReplaceText = document.getElementById('usernameReplaceText');
-  const fullNameReplaceText = document.getElementById('fullNameReplaceText');
-  const customWordsReplaceText = document.getElementById('customWordsReplaceText');
-  const customWordsList = document.getElementById('customWordsList');
-
-  // Twitter elements
-  const twitterUsernameBlur = document.getElementById('twitter-usernameBlur');
-  const twitterFullNameBlur = document.getElementById('twitter-fullNameBlur');
-  const twitterUsernameBlurMode = document.getElementById('twitter-usernameBlurMode');
-  const twitterUsernameReplaceMode = document.getElementById('twitter-usernameReplaceMode');
-  const twitterFullNameBlurMode = document.getElementById('twitter-fullNameBlurMode');
-  const twitterFullNameReplaceMode = document.getElementById('twitter-fullNameReplaceMode');
-  const twitterUsernameReplaceText = document.getElementById('twitter-usernameReplaceText');
-  const twitterFullNameReplaceText = document.getElementById('twitter-fullNameReplaceText');
-
-  // Load saved preferences for both platforms
-  chrome.storage.sync.get({
+  const defaultSettings = {
+    instagram: {
+      usernameBlur: true,
+      fullNameBlur: true,
+      usernameReplaceMode: false,
+      fullNameReplaceMode: false,
+      usernameReplaceText: '[username]',
+      fullNameReplaceText: '[name]',
+    },
+    twitter: {
     usernameBlur: true, 
     fullNameBlur: true,
-    customWordsBlur: true,
     usernameReplaceMode: false,
     fullNameReplaceMode: false,
-    customWordsReplaceMode: false,
     usernameReplaceText: '[username]',
     fullNameReplaceText: '[name]',
+    },
+    linkedin: {
+      usernameBlur: false, // Not applicable for LinkedIn
+      fullNameBlur: true,
+      usernameReplaceMode: false,
+      fullNameReplaceMode: false,
+      usernameReplaceText: '',
+      fullNameReplaceText: '[name]',
+    },
+    global: {
+      customWordsBlur: true,
+      customWordsReplaceMode: false,
     customWordsReplaceText: '[hidden]',
     customWordsList: '',
-    // Twitter preferences
-    twitterUsernameBlur: true,
-    twitterFullNameBlur: true,
-    twitterUsernameReplaceMode: false,
-    twitterFullNameReplaceMode: false,
-    twitterUsernameReplaceText: '[username]',
-    twitterFullNameReplaceText: '[name]'
-  }, function(result) {
-    usernameBlur.checked = result.usernameBlur;
-    fullNameBlur.checked = result.fullNameBlur;
-    customWordsBlur.checked = result.customWordsBlur;
-    customWordsList.value = result.customWordsList;
+    }
+  };
+
+  // --- UI ELEMENTS ---
+  const ui = {
+    tabs: document.querySelectorAll('.platform-tab-button'),
+    platformSettings: document.getElementById('platform-settings'),
+    globalSettings: document.getElementById('global-settings'),
+    error: document.getElementById('error'),
+    // Platform sections
+    usernameSection: document.getElementById('username-section'),
+    fullnameSection: document.getElementById('fullname-section'),
+    // Platform-specific controls
+    usernameDisplay: document.getElementById('username-display'),
+    usernameBlur: document.getElementById('username-blur'),
+    usernameBlurMode: document.querySelector('input[name="username-mode"][value="blur"]'),
+    usernameReplaceMode: document.querySelector('input[name="username-mode"][value="replace"]'),
+    usernameReplaceContainer: document.getElementById('username-replace-container'),
+    usernameReplaceText: document.getElementById('username-replace-text'),
+    fullnameDisplay: document.getElementById('fullname-display'),
+    fullnameBlur: document.getElementById('fullname-blur'),
+    fullnameBlurMode: document.querySelector('input[name="fullname-mode"][value="blur"]'),
+    fullnameReplaceMode: document.querySelector('input[name="fullname-mode"][value="replace"]'),
+    fullnameReplaceContainer: document.getElementById('fullname-replace-container'),
+    fullnameReplaceText: document.getElementById('fullname-replace-text'),
+    // Global controls
+    customWordsBlur: document.getElementById('custom-words-blur'),
+    customWordsBlurMode: document.querySelector('input[name="custom-words-mode"][value="blur"]'),
+    customWordsReplaceMode: document.querySelector('input[name="custom-words-mode"][value="replace"]'),
+    customWordsReplaceContainer: document.getElementById('custom-words-replace-container'),
+    customWordsReplaceText: document.getElementById('custom-words-replace-text'),
+    customWordsList: document.getElementById('custom-words-list'),
+    // Footer
+    refreshButton: document.getElementById('refresh-button'),
+    saveConfirmation: document.createElement('div'),
+  };
+  
+  // --- RENDER & UI LOGIC FUNCTIONS ---
+  function render() {
+    const platform = state.activeTab;
+    const isPlatform = platform === 'instagram' || platform === 'twitter' || platform === 'linkedin';
+    const isGlobal = platform === 'global';
     
-    // Set Instagram mode radio buttons
-    usernameBlurMode.checked = !result.usernameReplaceMode;
-    usernameReplaceMode.checked = result.usernameReplaceMode;
-    fullNameBlurMode.checked = !result.fullNameReplaceMode;
-    fullNameReplaceMode.checked = result.fullNameReplaceMode;
-    customWordsBlurMode.checked = !result.customWordsReplaceMode;
-    customWordsReplaceMode.checked = result.customWordsReplaceMode;
+    // Update tab visibility
+    ui.tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === platform));
+    ui.platformSettings.classList.toggle('active', isPlatform);
+    ui.globalSettings.classList.toggle('active', isGlobal);
 
-    // Set Twitter mode radio buttons and values
-    twitterUsernameBlur.checked = result.twitterUsernameBlur;
-    twitterFullNameBlur.checked = result.twitterFullNameBlur;
-    twitterUsernameBlurMode.checked = !result.twitterUsernameReplaceMode;
-    twitterUsernameReplaceMode.checked = result.twitterUsernameReplaceMode;
-    twitterFullNameBlurMode.checked = !result.twitterFullNameReplaceMode;
-    twitterFullNameReplaceMode.checked = result.twitterFullNameReplaceMode;
-    twitterUsernameReplaceText.value = result.twitterUsernameReplaceText;
-    twitterFullNameReplaceText.value = result.twitterFullNameReplaceText;
+    // Reset common UI states
+    ui.error.style.display = 'none';
+    [ui.usernameSection, ui.fullnameSection].forEach(el => {
+      el.classList.remove('disabled');
+      el.querySelectorAll('input').forEach(input => input.disabled = false);
+    });
     
-    // Set replacement text values
-    usernameReplaceText.value = result.usernameReplaceText;
-    fullNameReplaceText.value = result.fullNameReplaceText;
-    customWordsReplaceText.value = result.customWordsReplaceText;
+    // Populate controls based on active tab
+    if (isPlatform) {
+      const s = state.settings[platform];
+      
+      // Handle page relevance (only for platform tabs)
+      if (!state.isRelevantPage) {
+        ui.error.textContent = `Navigate to a ${platform} page to see options.`;
+        ui.error.style.display = 'block';
+        [ui.usernameSection, ui.fullnameSection].forEach(el => {
+            el.classList.add('disabled');
+            el.querySelectorAll('input').forEach(input => input.disabled = true);
+        });
+      }
+
+      // Handle LinkedIn specifics
+      const isLinkedIn = platform === 'linkedin';
+      ui.usernameSection.style.display = isLinkedIn ? 'none' : 'block';
+      if (!isLinkedIn) {
+        ui.usernameBlur.checked = s.usernameBlur;
+        ui.usernameReplaceMode.checked = s.usernameReplaceMode;
+        ui.usernameBlurMode.checked = !s.usernameReplaceMode;
+        ui.usernameReplaceText.value = s.usernameReplaceText;
+        ui.usernameReplaceContainer.classList.toggle('visible', s.usernameReplaceMode);
+      }
+      
+      ui.fullnameBlur.checked = s.fullNameBlur;
+      ui.fullnameReplaceMode.checked = s.fullNameReplaceMode;
+      ui.fullnameBlurMode.checked = !s.fullNameReplaceMode;
+      ui.fullnameReplaceText.value = s.fullNameReplaceText;
+      ui.fullnameReplaceContainer.classList.toggle('visible', s.fullNameReplaceMode);
+      
+      loadProfileInfo();
+
+    } else if (isGlobal) {
+      const s = state.settings.global;
+      ui.customWordsBlur.checked = s.customWordsBlur;
+      ui.customWordsReplaceMode.checked = s.customWordsReplaceMode;
+      ui.customWordsBlurMode.checked = !s.customWordsReplaceMode;
+      ui.customWordsReplaceText.value = s.customWordsReplaceText;
+      ui.customWordsList.value = s.customWordsList;
+      ui.customWordsReplaceContainer.classList.toggle('visible', s.customWordsReplaceMode);
+    }
+  }
+
+  // --- DATA & SYNC FUNCTIONS ---
+  function saveState() {
+    const platform = state.activeTab;
+    const isPlatform = platform === 'instagram' || platform === 'twitter' || platform === 'linkedin';
+
+    if (isPlatform) {
+      state.settings[platform] = {
+        usernameBlur: ui.usernameBlur.checked,
+        fullNameBlur: ui.fullnameBlur.checked,
+        usernameReplaceMode: ui.usernameReplaceMode.checked,
+        fullNameReplaceMode: ui.fullnameReplaceMode.checked,
+        usernameReplaceText: ui.usernameReplaceText.value,
+        fullNameReplaceText: ui.fullnameReplaceText.value,
+      };
+    } else { // Global
+       state.settings.global = {
+        customWordsBlur: ui.customWordsBlur.checked,
+        customWordsReplaceMode: ui.customWordsReplaceMode.checked,
+        customWordsReplaceText: ui.customWordsReplaceText.value,
+        customWordsList: ui.customWordsList.value,
+      };
+    }
     
-    // Send initial settings to content script
-    updateBlurSettings();
-  });
+    chrome.storage.sync.set({ settings: state.settings }, () => {
+      updateContentScript();
+      showSaveConfirmation();
+      chrome.runtime.sendMessage({ action: "settingsUpdated" });
+    });
+  }
 
-  // Save preferences when changed
-  usernameBlur.addEventListener('change', function() {
-    chrome.storage.sync.set({ usernameBlur: this.checked });
-    updateBlurSettings();
-  });
-
-  fullNameBlur.addEventListener('change', function() {
-    chrome.storage.sync.set({ fullNameBlur: this.checked });
-    updateBlurSettings();
-  });
-  
-  // Mode selection event listeners
-  usernameBlurMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ usernameReplaceMode: false });
-      updateBlurSettings();
+  function showSaveConfirmation() {
+    if (!document.body.contains(ui.saveConfirmation)) {
+      ui.saveConfirmation.textContent = 'Saved!';
+      ui.saveConfirmation.style.cssText = `
+        position: fixed; bottom: 15px; left: 50%; transform: translateX(-50%);
+        background-color: var(--primary-color); color: white; padding: 8px 16px;
+        border-radius: 20px; font-size: 14px; z-index: 100;
+        opacity: 0; transition: opacity 0.3s, transform 0.3s;
+      `;
+      document.body.appendChild(ui.saveConfirmation);
     }
-  });
-  
-  usernameReplaceMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ usernameReplaceMode: true });
-      updateBlurSettings();
-    }
-  });
-  
-  fullNameBlurMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ fullNameReplaceMode: false });
-      updateBlurSettings();
-    }
-  });
-  
-  fullNameReplaceMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ fullNameReplaceMode: true });
-      updateBlurSettings();
-    }
-  });
-  
-  // Replacement text event listeners
-  usernameReplaceText.addEventListener('input', function() {
-    chrome.storage.sync.set({ usernameReplaceText: this.value });
-    updateBlurSettings();
-  });
-  
-  fullNameReplaceText.addEventListener('input', function() {
-    chrome.storage.sync.set({ fullNameReplaceText: this.value });
-    updateBlurSettings();
-  });
+    
+    setTimeout(() => {
+        ui.saveConfirmation.style.opacity = '1';
+        ui.saveConfirmation.style.transform = 'translateX(-50%) translateY(0)';
+    }, 10);
 
-  customWordsBlur.addEventListener('change', function() {
-    chrome.storage.sync.set({ customWordsBlur: this.checked });
-    updateBlurSettings();
-  });
+    setTimeout(() => {
+      ui.saveConfirmation.style.opacity = '0';
+      ui.saveConfirmation.style.transform = 'translateX(-50%) translateY(10px)';
+    }, 2000);
+  }
 
-  customWordsBlurMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ customWordsReplaceMode: false });
-      updateBlurSettings();
-    }
-  });
+  function updateContentScript() {
+    chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+      if (!tabs[0] || !tabs[0].url) return;
+      const tab = tabs[0];
 
-  customWordsReplaceMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ customWordsReplaceMode: true });
-      updateBlurSettings();
-    }
-  });
+      const isInstagram = tab.url.includes('instagram.com');
+      const isTwitter = tab.url.includes('twitter.com') || tab.url.includes('x.com');
+      const isLinkedIn = tab.url.includes('linkedin.com');
 
-  customWordsReplaceText.addEventListener('input', function() {
-    chrome.storage.sync.set({ customWordsReplaceText: this.value });
-    updateBlurSettings();
-  });
-
-  customWordsList.addEventListener('input', function() {
-    chrome.storage.sync.set({ customWordsList: this.value });
-    updateBlurSettings();
-  });
-
-  // Twitter event listeners
-  twitterUsernameBlur.addEventListener('change', function() {
-    chrome.storage.sync.set({ twitterUsernameBlur: this.checked });
-    updateBlurSettings();
-  });
-
-  twitterFullNameBlur.addEventListener('change', function() {
-    chrome.storage.sync.set({ twitterFullNameBlur: this.checked });
-    updateBlurSettings();
-  });
-
-  twitterUsernameBlurMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ twitterUsernameReplaceMode: false });
-      updateBlurSettings();
-    }
-  });
-
-  twitterUsernameReplaceMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ twitterUsernameReplaceMode: true });
-      updateBlurSettings();
-    }
-  });
-
-  twitterFullNameBlurMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ twitterFullNameReplaceMode: false });
-      updateBlurSettings();
-    }
-  });
-
-  twitterFullNameReplaceMode.addEventListener('change', function() {
-    if (this.checked) {
-      chrome.storage.sync.set({ twitterFullNameReplaceMode: true });
-      updateBlurSettings();
-    }
-  });
-
-  twitterUsernameReplaceText.addEventListener('input', function() {
-    chrome.storage.sync.set({ twitterUsernameReplaceText: this.value });
-    updateBlurSettings();
-  });
-
-  twitterFullNameReplaceText.addEventListener('input', function() {
-    chrome.storage.sync.set({ twitterFullNameReplaceText: this.value });
-    updateBlurSettings();
-  });
-
-  function updateBlurSettings() {
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-      const isInstagram = tabs[0].url.includes('instagram.com');
-      const isTwitter = tabs[0].url.includes('twitter.com') || tabs[0].url.includes('x.com');
-
-      if (isInstagram || isTwitter) {
-        const settings = isInstagram ? {
+      if (isInstagram || isTwitter || isLinkedIn) {
+        const platform = isInstagram ? 'instagram' : (isTwitter ? 'twitter' : 'linkedin');
+        const payload = {
           action: 'updateBlurSettings',
           settings: {
-            usernameBlur: usernameBlur.checked,
-            fullNameBlur: fullNameBlur.checked,
-            usernameReplaceMode: usernameReplaceMode.checked,
-            fullNameReplaceMode: fullNameReplaceMode.checked,
-            usernameReplaceText: usernameReplaceText.value,
-            fullNameReplaceText: fullNameReplaceText.value,
-            customWordsBlur: customWordsBlur.checked,
-            customWordsReplaceMode: customWordsReplaceMode.checked,
-            customWordsReplaceText: customWordsReplaceText.value,
-            customWordsList: customWordsList.value
-          }
-        } : {
-          action: 'updateBlurSettings',
-          settings: {
-            usernameBlur: twitterUsernameBlur.checked,
-            fullNameBlur: twitterFullNameBlur.checked,
-            usernameReplaceMode: twitterUsernameReplaceMode.checked,
-            fullNameReplaceMode: twitterFullNameReplaceMode.checked,
-            usernameReplaceText: twitterUsernameReplaceText.value,
-            fullNameReplaceText: twitterFullNameReplaceText.value,
-            customWordsBlur: customWordsBlur.checked,
-            customWordsReplaceMode: customWordsReplaceMode.checked,
-            customWordsReplaceText: customWordsReplaceText.value,
-            customWordsList: customWordsList.value
+            ...state.settings[platform],
+            ...state.settings.global,
           }
         };
-        chrome.tabs.sendMessage(tabs[0].id, settings);
+        chrome.tabs.sendMessage(tab.id, payload, () => {
+          if (chrome.runtime.lastError) { /* ignore error if content script not ready */ }
+        });
       }
     });
   }
 
   function loadProfileInfo() {
-    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-      const isInstagram = tabs[0].url.includes('instagram.com');
-      const isTwitter = tabs[0].url.includes('twitter.com') || tabs[0].url.includes('x.com');
-  
-      if ((isInstagram && currentPlatform === 'instagram') || (isTwitter && currentPlatform === 'twitter')) {
-        chrome.tabs.sendMessage(tabs[0].id, {action: 'getProfileInfo'}, function(response) {
-          if (response && response.username && response.fullName) {
-            const prefix = currentPlatform === 'twitter' ? 'twitter-' : '';
-            document.getElementById(prefix + 'username').textContent = response.username;
-            document.getElementById(prefix + 'fullName').textContent = response.fullName;
-            document.getElementById('error').style.display = 'none';
-          } else {
-            document.getElementById('error').style.display = 'block';
-            const prefix = currentPlatform === 'twitter' ? 'twitter-' : '';
-            document.getElementById(prefix + 'username').textContent = 'Not found';
-            document.getElementById(prefix + 'fullName').textContent = 'Not found';
-          }
-        });
-      } else {
-        document.getElementById('error').style.display = 'block';
-        const prefix = currentPlatform === 'twitter' ? 'twitter-' : '';
-        document.getElementById(prefix + 'username').textContent = 'Not available';
-        document.getElementById(prefix + 'fullName').textContent = 'Not available';
+    chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+      if (!tabs[0] || !tabs[0].id || !tabs[0].url) {
+        ui.error.style.display = 'block';
+        return;
       }
-  
-      // Update visibility of platform content
-      platformContents.forEach(content => {
-        content.classList.remove('active');
-        if (content.id === `${currentPlatform}-tab`) {
-          content.classList.add('active');
+      
+      const currentUrl = tabs[0].url;
+      let platform = null;
+      if (currentUrl.includes('instagram.com')) platform = 'instagram';
+      else if (currentUrl.includes('twitter.com') || currentUrl.includes('x.com')) platform = 'twitter';
+      else if (currentUrl.includes('linkedin.com')) platform = 'linkedin';
+
+      // Only try to get info if the active tab in the popup matches the page
+      if (state.activeTab !== platform) {
+        ui.usernameDisplay.textContent = 'N/A';
+        ui.fullnameDisplay.textContent = 'N/A';
+        return;
+      }
+
+      chrome.tabs.sendMessage(tabs[0].id, { action: 'getProfileInfo' }, function(response) {
+        if (chrome.runtime.lastError || !response) {
+          ui.usernameDisplay.textContent = 'Not Found';
+          ui.fullnameDisplay.textContent = 'Not Found';
+          return;
         }
+        
+        ui.usernameDisplay.textContent = response.username || 'N/A';
+        ui.fullnameDisplay.textContent = response.fullName || 'N/A';
       });
     });
   }
+
+  // --- INITIALIZATION ---
+  chrome.storage.sync.get({ settings: defaultSettings }, (data) => {
+    state.settings = data.settings;
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs[0];
+      if (tab && tab.url) {
+        const url = tab.url;
+        let platform = null;
+        if (url.includes('instagram.com')) platform = 'instagram';
+        else if (url.includes('twitter.com') || url.includes('x.com')) platform = 'twitter';
+        else if (url.includes('linkedin.com')) platform = 'linkedin';
+
+        if (platform) {
+            state.activeTab = platform;
+            state.isRelevantPage = true;
+        } else {
+            state.activeTab = 'instagram'; // Default tab
+            state.isRelevantPage = false;
+        }
+      }
+      render();
+      updateContentScript(); // Initial sync with content script
+    });
+  });
+
+  // --- EVENT LISTENERS ---
+  ui.tabs.forEach(tab => {
+    tab.addEventListener('click', (e) => {
+      state.activeTab = e.target.dataset.tab;
+      // Check relevance again when switching tabs
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const url = tabs[0]?.url || '';
+        if (state.activeTab === 'instagram') state.isRelevantPage = url.includes('instagram.com');
+        else if (state.activeTab === 'twitter') state.isRelevantPage = url.includes('twitter.com') || url.includes('x.com');
+        else if (state.activeTab === 'linkedin') state.isRelevantPage = url.includes('linkedin.com');
+        else state.isRelevantPage = true; // Global tab is always "relevant"
+        render();
+      });
+    });
+  });
+
+  ui.refreshButton.addEventListener('click', () => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0] && tabs[0].id) {
+        chrome.tabs.sendMessage(tabs[0].id, { action: 'update' }, () => {
+          if (chrome.runtime.lastError) { /* ignore */ } 
+          else { loadProfileInfo(); }
+        });
+      }
+    });
+  });
+
+  document.body.addEventListener('input', (e) => {
+    // This single listener handles all inputs and saves state
+    // It also triggers re-rendering for the replace containers
+    saveState();
+    if (e.target.name && e.target.name.endsWith('-mode')) {
+        render();
+    }
+  });
 });

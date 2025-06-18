@@ -1,25 +1,49 @@
 {
   "manifest_version": 3,
-  "name": "Social Media Profile Protector",
+  "name": "MaskIt: Blur, Replace, or Hide Social Media Names",
   "version": "1.0",
-  "description": "Protects your profile information on Instagram and Twitter/X",
+  "description": "Blur, replace, or hide your username, full name, and other words on social media profiles.",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "contextMenus"
   ],
   "host_permissions": [
     "*://*.instagram.com/*",
     "*://*.twitter.com/*",
-    "*://*.x.com/*"
+    "*://*.x.com/*",
+    "*://*.linkedin.com/*"
   ],
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "128": "icons/inactive.png"
+    }
+  },
+  "icons": {
+    "128": "icons/active.png"
   },
   "content_scripts": [{
-    "matches": ["*://*.instagram.com/*", "*://*.twitter.com/*", "*://*.x.com/*"],
+    "matches": ["*://*.instagram.com/*", "*://*.twitter.com/*", "*://*.x.com/*", "*://*.linkedin.com/*"],
     "js": ["content.js"]
   }],
   "background": {
     "service_worker": "background.js"
+  },
+  "commands": {
+    "hide-current-profile": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+H",
+        "mac": "Command+Shift+H"
+      },
+      "description": "Hide the profile on the current page"
+    },
+    "toggle-masking": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+X",
+        "mac": "Command+Shift+X"
+      },
+      "description": "Toggle all masking on/off for the current site"
+    }
   }
 }

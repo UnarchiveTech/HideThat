@@ -1,3 +1,15 @@
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
 let currentProfileInfo = null;
 
 let blurSettings = {
@@ -12,6 +24,62 @@ let blurSettings = {
   customWordsReplaceText: "[hidden]",
   customWordsList: ""
 };
+
+const defaultSettings = {
+  settings: {
+    instagram: {
+      usernameBlur: true,
+      fullNameBlur: true,
+      usernameReplaceMode: false,
+      fullNameReplaceMode: false,
+      usernameReplaceText: '[username]',
+      fullNameReplaceText: '[name]',
+    },
+    twitter: {
+      usernameBlur: true,
+      fullNameBlur: true,
+      usernameReplaceMode: false,
+      fullNameReplaceMode: false,
+      usernameReplaceText: '[username]',
+      fullNameReplaceText: '[name]',
+    },
+    linkedin: {
+      usernameBlur: false,
+      fullNameBlur: true,
+      usernameReplaceMode: false,
+      fullNameReplaceMode: false,
+      usernameReplaceText: '',
+      fullNameReplaceText: '[name]',
+    },
+    global: {
+      customWordsBlur: true,
+      customWordsReplaceMode: false,
+      customWordsReplaceText: '[hidden]',
+      customWordsList: '',
+    }
+  }
+};
+
+// Load settings from storage when the script starts
+chrome.storage.sync.get(defaultSettings, (result) => {
+  const currentUrl = window.location.href;
+  
+  let platform = 'instagram'; // Default
+  if (currentUrl.includes('twitter.com') || currentUrl.includes('x.com')) platform = 'twitter';
+  if (currentUrl.includes('linkedin.com')) platform = 'linkedin';
+
+  const platformSettings = result.settings[platform];
+
+  // Combine platform-specific and global settings
+  blurSettings = { ...platformSettings, ...result.settings.global };
+
+  // Initial run after loading settings
+  const profileInfo = extractProfileInfo();
+  if (profileInfo) {
+    currentProfileInfo = profileInfo;
+    applyBlurEffect(profileInfo);
+  }
+});
 
 function processTextNode(textNode, profileInfo) {
   if (!profileInfo) return;
@@ -96,21 +164,27 @@ function processNodes(root, profileInfo) {
   const walker = document.createTreeWalker(
     root,
     NodeFilter.SHOW_TEXT,
-    null,
+    {
+      acceptNode: function(node) {
+        // Reject nodes inside our own generated elements, or inside scripts/styles.
+        if (node.parentElement.closest('.profile-blur, .profile-replaced, script, style')) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    },
     false
   );
 
-  const textNodes = [];
-  let node;
-  while (node = walker.nextNode()) {
-    textNodes.push(node);
+  // Collect nodes first to avoid issues with modifying the DOM while iterating.
+  const nodesToProcess = [];
+  while(walker.nextNode()) {
+    nodesToProcess.push(walker.currentNode);
   }
 
-  textNodes.forEach(node => {
-    if (node.parentNode && 
-        !node.parentNode.classList?.contains('profile-blur')) {
+  // Now, process the collected nodes.
+  nodesToProcess.forEach(node => {
       processTextNode(node, profileInfo);
-    }
   });
 }
 
@@ -119,16 +193,16 @@ function applyBlurEffect(profileInfo) {
     processNodes(document.body, profileInfo);
   }
 
-  const observer = new MutationObserver(mutations => {
-    mutations.forEach(mutation => {
-      mutation.addedNodes.forEach(node => {
-        if (node.nodeType === Node.ELEMENT_NODE) {
-          requestAnimationFrame(() => {
-            processNodes(node, profileInfo);
-          });
-        }
-      });
-    });
+  // Debounce the processing to avoid performance issues on rapid DOM changes
+  const debouncedProcessNodes = debounce(() => {
+    // Re-process the entire body. This is simpler and safer than trying to
+    // process only added nodes, and with debouncing it's efficient enough.
+    processNodes(document.body, profileInfo);
+  }, 150); // Wait 150ms after the last change
+
+  const observer = new MutationObserver(() => {
+    // Any change triggers a debounced full reprocessing.
+    debouncedProcessNodes();
   });
 
   observer.observe(document.body, {
@@ -204,492 +278,90 @@ function extractInstagramProfileInfo() {
   return null;
 }
 
-function extractTwitterProfileInfo() {
-  console.log('Starting Twitter/X profile info extraction from page scripts...');
+// --- Twitter/X Profile Extraction (Refactored) ---
   
-  let profileInfo = null;
-  
+function _twitter_extractFromWindow() {
   // Method 1: Try to extract from global window object
   try {
-    console.log('DEBUG: Attempting to extract from global window object...');
-    // Twitter often stores user data in global variables
-    // Use Function constructor to safely evaluate JavaScript in page context
     const globalCheck = new Function(`
       try {
-        // Check for common Twitter data structures
-        if (window.__INITIAL_STATE__ && window.__INITIAL_STATE__.entities && 
-            window.__INITIAL_STATE__.entities.users && 
-            window.__INITIAL_STATE__.entities.users.current) {
+        if (window.__INITIAL_STATE__?.entities?.users?.current) {
           return JSON.stringify(window.__INITIAL_STATE__.entities.users.current);
         }
-        
-        // Check for other common patterns
-        if (window.__META_DATA__ && window.__META_DATA__.profile) {
+        if (window.__META_DATA__?.profile) {
           return JSON.stringify(window.__META_DATA__.profile);
         }
-        
-        // Look for any global object with user data
-        for (const key in window) {
-          if (key.includes('state') || key.includes('store') || key.includes('data')) {
-            const obj = window[key];
-            if (obj && typeof obj === 'object') {
-              // Look for user data in this object
-              if (obj.user || obj.viewer || obj.session || obj.account) {
-                return JSON.stringify(obj);
-              }
-            }
-          }
-        }
-        
         return null;
-      } catch (e) {
-        console.error('Error in global check:', e);
-        return null;
-      }
+      } catch (e) { return null; }
     `);
     
     const result = globalCheck();
     if (result) {
-      console.log('DEBUG: Found data in global window object, parsing...');
-      try {
         const data = JSON.parse(result);
-        console.log('DEBUG: Parsed global window data:', data);
-        
-        // Check various patterns for user data
         if (data.screen_name && data.name) {
-          profileInfo = {
-            username: data.screen_name,
-            fullName: data.name
-          };
-          console.log('Found Twitter profile info in global object:', profileInfo);
-          return profileInfo;
-        }
-        
-        if (data.user && data.user.screen_name && data.user.name) {
-          profileInfo = {
-            username: data.user.screen_name,
-            fullName: data.user.name
-          };
-          console.log('Found Twitter profile info in global user object:', profileInfo);
-          return profileInfo;
-        }
-        
-        if (data.username || data.handle) {
-          profileInfo = {
-            username: data.username || data.handle,
-            fullName: data.name || data.displayName || data.username || data.handle
-          };
-          console.log('Found Twitter profile info in global data:', profileInfo);
-          return profileInfo;
-        }
-      } catch (e) {
-        console.log('Error parsing global window data:', e);
+        return { username: data.screen_name, fullName: data.name };
       }
-    } else {
-      console.log('DEBUG: No data found in global window object');
     }
   } catch (e) {
-    console.log('Error accessing global window object:', e);
+    console.log('Error accessing global window object for Twitter info:', e);
+  }
+  return null;
   }
   
-  // Method 2: Specifically target script tags with type="text/javascript" containing "needs_phone_verification"
-  // This is the most reliable method for Twitter/X as per user requirements
-  console.log('Prioritizing search for script tags with type="text/javascript" containing "needs_phone_verification"...');
+function _twitter_extractFromScriptTags() {
+  // Method 2: Target script tags with specific identifiers
   const scripts = document.getElementsByTagName('script');
-  
-  console.log(`DEBUG: Found ${scripts.length} script tags in total`);
-  let scriptIndex = 0;
-  
   for (const script of scripts) {
-    scriptIndex++;
-    // Check if script has type="text/javascript" attribute
-    const scriptType = script.getAttribute('type');
-    console.log(`DEBUG: Script #${scriptIndex} - Type: ${scriptType || 'none'}`);
-    
-    if (scriptType === 'text/javascript') {
       const content = script.textContent;
-      const contentPreview = content ? content.substring(0, 100) + '...' : 'empty';
-      console.log(`DEBUG: Script #${scriptIndex} - Content preview: ${contentPreview}`);
-      
-      // Check if script contains the unique identifier "needs_phone_verification"
-      if (content && content.includes('needs_phone_verification')) {
-        console.log(`DEBUG: Script #${scriptIndex} - FOUND needs_phone_verification!`);
+    if (content && content.includes('needs_phone_verification')) {
+      // Prioritize precise regex for the object containing the verification flag
+      const precisePattern = /\{[^{}]*?"screen_name"\s*:\s*"[^"]+"[^{}]*?"name"\s*:\s*"[^"]+"[^{}]*?needs_phone_verification[^{}]*\}/;
+      let match = content.match(precisePattern);
+
+      if (match) {
         try {
-          console.log('Found script with needs_phone_verification, extracting profile info...');
-          console.log('Looking for exact "name" and "screen_name" keys in the same JSON object...');
-          
-          // First try to find the exact JSON object containing needs_phone_verification
-          // Use a more flexible regex pattern that can handle Twitter's specific JSON structure
-          // This pattern looks for JSON-like structures with needs_phone_verification
-          const precisePattern = /[{\[](?:.|\r|\n)*?needs_phone_verification(?:.|\r|\n)*?[}\]]/g;
-          const preciseMatches = content.match(precisePattern);
-          
-          console.log('Precise matches found:', preciseMatches ? preciseMatches.length : 0);
-          
-          if (preciseMatches) {
-            console.log('DEBUG: Precise matches content:');
-            preciseMatches.forEach((match, idx) => {
-              console.log(`DEBUG: Match #${idx} preview: ${match.substring(0, 100)}...`);
-            });
-            
-            for (const match of preciseMatches) {
-              try {
-                // First try direct regex extraction before attempting JSON parsing
-                // This can work even if the JSON is not perfectly parseable
-                const nameMatch = match.match(/"name"\s*:\s*"([^"]+)"/i);
-                const screenNameMatch = match.match(/"screen_name"\s*:\s*"([^"]+)"/i);
-                
-                if (nameMatch && nameMatch[1] && screenNameMatch && screenNameMatch[1]) {
-                  profileInfo = {
-                    fullName: nameMatch[1],
-                    username: screenNameMatch[1]
-                  };
-                  console.log('Found name and screen_name using regex extraction:', profileInfo);
-                  return profileInfo;
-                }
-                
-                // Try to parse the JSON object as fallback
-                console.log('DEBUG: Attempting to parse JSON match:', match.substring(0, 200) + '...');
-                const data = JSON.parse(match);
-                console.log('DEBUG: Successfully parsed JSON. Examining potential Twitter profile data object:', JSON.stringify(data));
-                
-                // Check for exact "name" and "screen_name" keys in the same object as needs_phone_verification
-                console.log('DEBUG: Checking for name property:', data.hasOwnProperty('name'));
-                console.log('DEBUG: Checking for screen_name property:', data.hasOwnProperty('screen_name'));
-                console.log('DEBUG: name value:', data.name);
-                console.log('DEBUG: screen_name value:', data.screen_name);
-                
-                if (data.hasOwnProperty('name') && data.hasOwnProperty('screen_name')) {
-                  profileInfo = {
-                    fullName: data.name,
-                    username: data.screen_name
-                  };
-                  console.log('Found exact name and screen_name keys in needs_phone_verification object:', profileInfo);
-                  return profileInfo;
-                }
-                
-                // Try to find name and screen_name in a nested object
-                console.log('DEBUG: Searching for name and screen_name in nested objects...');
-                const findUserData = (obj, path = '') => {
-                  if (!obj || typeof obj !== 'object') return null;
-                  
-                  // Check if this object has the required properties
-                  if (obj.name && obj.screen_name) {
-                    console.log(`DEBUG: Found name and screen_name at path: ${path}`);
-                    console.log(`DEBUG: name=${obj.name}, screen_name=${obj.screen_name}`);
-                    return {
-                      fullName: obj.name,
-                      username: obj.screen_name
-                    };
-                  }
-                  
-                  // Check nested objects
-                  for (const key in obj) {
-                    if (obj[key] && typeof obj[key] === 'object') {
-                      const result = findUserData(obj[key], `${path}.${key}`);
-                      if (result) return result;
-                    }
-                  }
-                  
-                  return null;
-                };
-                
-                const nestedData = findUserData(data);
-                if (nestedData) {
-                  profileInfo = nestedData;
-                  console.log('Found Twitter profile info in nested object:', profileInfo);
-                  return profileInfo;
-                } else {
-                  console.log('DEBUG: No nested objects with both name and screen_name found');
-                }
-              } catch (e) {
-                console.log('Error parsing precise JSON match:', e.message);
-              }
-            }
-          } else {
-            console.log('DEBUG: No precise matches found with needs_phone_verification');
+          const screenNameMatch = match[0].match(/"screen_name"\s*:\s*"([^"]+)"/i);
+          const nameMatch = match[0].match(/"name"\s*:\s*"([^"]+)"/i);
+          if (nameMatch && screenNameMatch) {
+            return { fullName: nameMatch[1], username: screenNameMatch[1] };
           }
-          
-          // If precise matching failed, try with a more general approach
-          // Look for any JSON-like structures in the script content
-          // This pattern is more flexible and can handle Twitter's specific JSON structure
-          const jsonPattern = /[{\[](?:.|\r|\n)*?[}\]]/g;
-          const matches = content.match(jsonPattern);
-          
-          // Also try direct regex extraction from the entire content
-          const directNameMatch = content.match(/"name"\s*:\s*"([^"]+)"/i);
-          const directScreenNameMatch = content.match(/"screen_name"\s*:\s*"([^"]+)"/i);
-          
-          if (directNameMatch && directNameMatch[1] && directScreenNameMatch && directScreenNameMatch[1]) {
-            profileInfo = {
-              fullName: directNameMatch[1],
-              username: directScreenNameMatch[1]
-            };
-            console.log('Found Twitter profile info using direct regex extraction:', profileInfo);
-            return profileInfo;
-          }
-          
-          if (matches) {
-            console.log('Found general JSON matches:', matches.length);
-            console.log('DEBUG: First 5 general matches preview:');
-            matches.slice(0, 5).forEach((match, idx) => {
-              console.log(`DEBUG: General match #${idx} preview: ${match.substring(0, 100)}...`);
-              console.log(`DEBUG: Contains needs_phone_verification: ${match.includes('needs_phone_verification')}`);
-              console.log(`DEBUG: Contains name: ${match.includes('name')}`);
-              console.log(`DEBUG: Contains screen_name: ${match.includes('screen_name')}`);
-            });
-            
-            // First, prioritize objects that contain both needs_phone_verification, name, and screen_name
-            let highPriorityCount = 0;
-            for (const match of matches) {
-              if (match.includes('needs_phone_verification') && match.includes('name') && match.includes('screen_name')) {
-                highPriorityCount++;
-                console.log(`DEBUG: High priority match #${highPriorityCount} found with all keywords`);
-                console.log(`DEBUG: Match content preview: ${match.substring(0, 150)}...`);
-                
-                try {
-                  const data = JSON.parse(match);
-                  console.log('Examining high-priority Twitter data object:', JSON.stringify(data));
-                  console.log('DEBUG: Object keys:', Object.keys(data));
-                  console.log('DEBUG: name property type:', typeof data.name, 'value:', data.name);
-                  console.log('DEBUG: screen_name property type:', typeof data.screen_name, 'value:', data.screen_name);
-                  
-                  // Direct check for the properties we need
-                  if (data.name && data.screen_name) {
-                    profileInfo = {
-                      fullName: data.name,
-                      username: data.screen_name
-                    };
-                    console.log('Found Twitter profile info with all required properties:', profileInfo);
-                    return profileInfo;
-                  } else {
-                    console.log('DEBUG: Object has name and screen_name keywords but values are not valid');
-                  }
-                } catch (e) {
-                  console.log('Error parsing high-priority match:', e.message);
-                }
-              }
-            }
-            
-            if (highPriorityCount === 0) {
-              console.log('DEBUG: No high priority matches found with all required keywords');
-            }
-            
-            // Then try all matches
-            for (const match of matches) {
-              try {
-                const data = JSON.parse(match);
-                
-                // Check for name and screen_name in the same JSON object as needs_phone_verification
-                if (data.needs_phone_verification !== undefined && data.hasOwnProperty('name') && data.hasOwnProperty('screen_name')) {
-                  profileInfo = {
-                    fullName: data.name,
-                    username: data.screen_name
-                  };
-                  console.log('Found Twitter profile info in script with needs_phone_verification:', profileInfo);
-                  return profileInfo;
-                }
-                
-                // Check for nested user objects that might contain the data
-                if (data.user && data.user.hasOwnProperty('name') && data.user.hasOwnProperty('screen_name')) {
-                  profileInfo = {
-                    fullName: data.user.name,
-                    username: data.user.screen_name
-                  };
-                  console.log('Found Twitter profile info in nested user object:', profileInfo);
-                  return profileInfo;
-                }
-                
-                // Deep search for name and screen_name properties
-                const findNameAndScreenName = (obj, path = '') => {
-                  if (!obj || typeof obj !== 'object') return null;
-                  
-                  // Check if this object has both name and screen_name
-                  if (obj.name && obj.screen_name && typeof obj.name === 'string' && typeof obj.screen_name === 'string') {
-                    console.log(`Found name and screen_name at path: ${path}`);
-                    return {
-                      fullName: obj.name,
-                      username: obj.screen_name
-                    };
-                  }
-                  
-                  // Check nested objects
-                  for (const key in obj) {
-                    if (obj[key] && typeof obj[key] === 'object') {
-                      // Skip large arrays that are unlikely to contain user data
-                      if (Array.isArray(obj[key]) && obj[key].length > 10) continue;
-                      
-                      const result = findNameAndScreenName(obj[key], `${path}.${key}`);
-                      if (result) return result;
-                    }
-                  }
-                  
-                  return null;
-                };
-                
-                const deepSearchResult = findNameAndScreenName(data);
-                if (deepSearchResult) {
-                  profileInfo = deepSearchResult;
-                  console.log('Found Twitter profile info through deep search:', profileInfo);
-                  return profileInfo;
-                }
-              } catch (e) {
-                // Silent catch for invalid JSON
-              }
-            }
-          }
-        } catch (e) {
-          console.log('Error processing Twitter script content:', e);
-        }
+        } catch(e) { /* Fallback to general search */ }
+      }
+
+      // Fallback: More general regex if the precise one fails
+      const nameMatch = content.match(/"name"\s*:\s*"([^"]+)"/i);
+      const screenNameMatch = content.match(/"screen_name"\s*:\s*"([^"]+)"/i);
+      if (nameMatch && nameMatch[1] && screenNameMatch && screenNameMatch[1]) {
+        return { fullName: nameMatch[1], username: screenNameMatch[1] };
       }
     }
   }
-  
-  // Fallback: Try to extract from the page source using a more robust pattern
-  try {
-    console.log('Attempting to extract Twitter profile from page source with improved pattern...');
+  return null;
+}
+
+function _twitter_extractFromSourceRegex() {
+    // Method 3: Fallback to regex on the entire page source
+    try {
     const pageSource = document.documentElement.outerHTML;
-    
-    // Look for JSON objects that might contain user data with a more robust pattern
-    // This pattern can find objects with both name and screen_name properties
-    // Try both ordering possibilities: name first or screen_name first
-    const userDataPattern1 = /\{[^\{\}]*"screen_name"\s*:\s*"([^"]+)"[^\{\}]*"name"\s*:\s*"([^"]+)"[^\{\}]*\}/g;
-    const userDataPattern2 = /\{[^\{\}]*"name"\s*:\s*"([^"]+)"[^\{\}]*"screen_name"\s*:\s*"([^"]+)"[^\{\}]*\}/g;
-    
-    const matches1 = pageSource.match(userDataPattern1) || [];
-    const matches2 = pageSource.match(userDataPattern2) || [];
-    const matches = [...matches1, ...matches2];
+        const userDataPattern = /\{[^{}]*"screen_name"\s*:\s*"([^"]+)"[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*\}/g;
+        const matches = pageSource.match(userDataPattern);
     
     if (matches && matches.length > 0) {
-      console.log('Found potential Twitter user data matches in page source:', matches.length);
-      
-      for (const match of matches) {
-        // Extract the screen_name and name directly using regex
-        const screenNameMatch = match.match(/"screen_name"\s*:\s*"([^"]+)"/i);
-        const nameMatch = match.match(/"name"\s*:\s*"([^"]+)"/i);
-        
-        if (screenNameMatch && screenNameMatch[1] && nameMatch && nameMatch[1]) {
-          profileInfo = {
-            username: screenNameMatch[1],
-            fullName: nameMatch[1]
-          };
-          console.log('Extracted Twitter profile info from page source:', profileInfo);
-          return profileInfo;
-        }
-      }
-    }
-    
-    // If no matches found with the above patterns, try a proximity-based approach
-    // Find all name and screen_name values in the page source
-    const allNameMatches = Array.from(pageSource.matchAll(/"name"\s*:\s*"([^"]+)"/gi));
-    const allScreenNameMatches = Array.from(pageSource.matchAll(/"screen_name"\s*:\s*"([^"]+)"/gi));
-    
-    if (allNameMatches.length > 0 && allScreenNameMatches.length > 0) {
-      console.log(`Found ${allNameMatches.length} name matches and ${allScreenNameMatches.length} screen_name matches`);
-      
-      // Find the closest pair of name and screen_name values
-      let closestPair = null;
-      let minDistance = Infinity;
-      
-      for (const nameMatch of allNameMatches) {
-        for (const screenNameMatch of allScreenNameMatches) {
-          const distance = Math.abs(nameMatch.index - screenNameMatch.index);
-          if (distance < minDistance && distance < 500) { // Only consider pairs within 500 characters
-            minDistance = distance;
-            closestPair = {
-              fullName: nameMatch[1],
-              username: screenNameMatch[1]
-            };
-          }
-        }
-      }
-      
-      if (closestPair) {
-        profileInfo = closestPair;
-        console.log('Found Twitter profile info using proximity matching:', profileInfo);
-        return profileInfo;
-      }
-    }
-  } catch (e) {
-    console.log('Error extracting Twitter profile from page source:', e);
-  }
-  
-  // Fallback: Try to find user data in any script tags
-  for (const script of scripts) {
-    const content = script.textContent;
-    
-    // Check if script contains screen_name and name
-    if (content && content.includes('screen_name') && content.includes('name')) {
-      try {
-        console.log('Found script with screen_name and name, attempting to extract...');
-        
-        // First try to find JSON objects containing both screen_name and name
-        const jsonPattern = /\{(?:[^{}]|\{[^{}]*\})*\}/g;
-        const matches = content.match(jsonPattern);
-        
-        if (matches) {
-          for (const match of matches) {
-            try {
-              const data = JSON.parse(match);
-              
-              // Check for Twitter user data patterns
-              if (data.hasOwnProperty('screen_name') && data.hasOwnProperty('name')) {
-                profileInfo = {
-                  fullName: data.name,
-                  username: data.screen_name
-                };
-                console.log('Found Twitter profile info in script JSON:', profileInfo);
-                return profileInfo;
-              }
-              
-              // Check for nested structures that might contain the user data
-              // Look for common patterns in Twitter's data structure
-              const checkNestedObject = (obj, path = '') => {
-                if (!obj || typeof obj !== 'object') return null;
-                
-                // Direct check for screen_name and name properties
-                if (obj.hasOwnProperty('screen_name') && obj.hasOwnProperty('name')) {
-                  console.log(`Found user data at path: ${path}`);
-                  return {
-                    username: obj.screen_name,
-                    fullName: obj.name
-                  };
-                }
-                
-                // Check nested objects
-                for (const key in obj) {
-                  if (obj[key] && typeof obj[key] === 'object') {
-                    // Skip arrays that are likely not user data
-                    if (Array.isArray(obj[key]) && obj[key].length > 5) continue;
-                    
-                    const result = checkNestedObject(obj[key], `${path}.${key}`);
-                    if (result) return result;
-                  }
-                }
-                
-                return null;
-              };
-              
-              const nestedResult = checkNestedObject(data);
-              if (nestedResult) {
-                profileInfo = nestedResult;
-                console.log('Found Twitter profile info in nested object:', profileInfo);
-                return profileInfo;
-              }
-            } catch (e) {
-              // Silent catch for invalid JSON
-            }
+            const screenNameMatch = matches[0].match(/"screen_name"\s*:\s*"([^"]+)"/i);
+            const nameMatch = matches[0].match(/"name"\s*:\s*"([^"]+)"/i);
+            if (screenNameMatch && nameMatch) {
+                return { username: screenNameMatch[1], fullName: nameMatch[1] };
           }
         }
       } catch (e) {
-        console.log('Error processing Twitter script content:', e);
-      }
+        console.log('Error extracting Twitter profile from page source via Regex:', e);
     }
+    return null;
   }
   
-  // Method 3: Try to extract from meta tags
+function _twitter_extractFromMetaTags() {
+  // Method 4: Try to extract from meta tags
   try {
-    // Twitter often includes user info in meta tags
     const metaTags = document.querySelectorAll('meta[content][name], meta[content][property]');
     let twitterHandle = null;
     let twitterName = null;
@@ -699,130 +371,126 @@ function extractTwitterProfileInfo() {
       const content = tag.getAttribute('content') || '';
       
       if (name.includes('twitter:creator') || name.includes('twitter:site')) {
-        if (content.startsWith('@')) {
-          twitterHandle = content.substring(1); // Remove @ symbol
-        } else {
-          twitterHandle = content;
-        }
+        twitterHandle = content.startsWith('@') ? content.substring(1) : content;
       }
-      
-      if (name.includes('twitter:title') || name.includes('og:title')) {
-        twitterName = content;
-        // Clean up title if it contains "on Twitter" or similar
-        if (twitterName.includes(' on Twitter') || twitterName.includes(' on X')) {
-          twitterName = twitterName.replace(/ on (Twitter|X).*$/, '');
+      if (name.includes('og:title')) {
+        // Example: "Elon Musk (@elonmusk) on X"
+        const match = content.match(/(.*)\s\(@(\w+)\)/);
+        if (match && match[1] && match[2]) {
+            return { fullName: match[1], username: match[2] };
         }
       }
     }
     
     if (twitterHandle && twitterName) {
-      profileInfo = {
-        username: twitterHandle,
-        fullName: twitterName
-      };
-      console.log('Found Twitter profile info from meta tags:', profileInfo);
-      return profileInfo;
+      return { username: twitterHandle, fullName: twitterName };
     }
   } catch (e) {
     console.log('Error extracting Twitter profile from meta tags:', e);
   }
+  return null;
+}
+
+function _twitter_extractFromDOM() {
+    // Method 5: Last resort, inspect DOM elements
+    try {
+        // Look for profile link in the main navigation
+        const profileLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+        if (profileLink) {
+            const href = profileLink.getAttribute('href');
+            const username = href ? href.substring(1) : null;
+            if (username) {
+                // The name is often in a nested span
+                const nameElement = profileLink.querySelector('div > div > span');
+                const fullName = nameElement ? nameElement.textContent.trim() : username;
+                return { username, fullName };
+            }
+        }
+    } catch(e) {
+        console.log('Error extracting Twitter profile from DOM:', e);
+    }
+    return null;
+}
+
+function extractTwitterProfileInfo() {
+  console.log('Starting Twitter/X profile info extraction...');
   
-  // Method 4: Try to extract from DOM elements
-  try {
-    // Look for nav elements that might contain user info
-    const navItems = document.querySelectorAll('[data-testid="AppTabBar_Profile_Link"], [aria-label*="profile"], [href*="/home"]');
-    
-    for (const item of navItems) {
-      const href = item.getAttribute('href');
-      if (href && href.startsWith('/')) {
-        const username = href.split('/').filter(Boolean)[0];
+  const extractionMethods = [
+    _twitter_extractFromWindow,
+    _twitter_extractFromScriptTags,
+    _twitter_extractFromSourceRegex,
+    _twitter_extractFromMetaTags,
+    _twitter_extractFromDOM
+  ];
 
-
-        if (username && username !== 'home' && username !== 'explore' && username !== 'notifications') {
-          // Try to find the display name, but avoid elements that just contain the word "Profile"
-          const nameElements = document.querySelectorAll(`[href="/${username}"] div, [href="/${username}"] span`);
-          let fullName = username; // Default fallback
-          
-          // Filter out elements that just contain "Profile" text
-          for (const element of nameElements) {
-            const text = element.textContent.trim();
-            if (text && text !== 'Profile' && text !== username) {
-              fullName = text;
-              break;
-            }
-          }
-          
-          profileInfo = {
-            username: username,
-            fullName: fullName
-          };
-          console.log('Found Twitter profile info from DOM navigation:', profileInfo);
+  for (const method of extractionMethods) {
+    const profileInfo = method();
+    if (profileInfo) {
+      console.log(`Found Twitter profile info using: ${method.name}`, profileInfo);
           return profileInfo;
-        }
-      }
     }
-    
-    // Try to find profile link in the sidebar
-    const profileLinks = document.querySelectorAll('a[href^="/"]');
-    for (const link of profileLinks) {
-      const href = link.getAttribute('href');
-      if (href && href.startsWith('/') && !href.includes('/') && href.length > 1) {
-        const username = href.substring(1);
-        if (username && !['home', 'explore', 'notifications', 'messages', 'bookmarks'].includes(username)) {
-          profileInfo = {
-            username: username,
-            fullName: username // Use username as fallback
-          };
-          console.log('Found Twitter username from profile link:', profileInfo);
-          return profileInfo;
-        }
-      }
-    }
-    
-    // Look for profile image which might contain username in alt text or aria-label
-    const profileImages = document.querySelectorAll('img[alt*="profile"], [aria-label*="profile"]');
-    for (const img of profileImages) {
-      const altText = img.getAttribute('alt') || img.getAttribute('aria-label') || '';
-      
-      // Skip if the alt text is just "Profile" or similar generic text
-      if (altText === 'Profile' || altText === 'profile' || altText === 'Profile image') {
-        continue;
-      }
-      
-      // Look for username patterns in the alt text
-      const matches = altText.match(/(@\w+)|([\w]+)'s profile/i);
-      if (matches && matches[1]) {
-        const username = matches[1].startsWith('@') ? matches[1].substring(1) : matches[1];
-        
-        // Try to find a better name than just the username
-        let fullName = username;
-        
-        // Look for a name in nearby elements
-        const parentElement = img.parentElement;
-        if (parentElement) {
-          const nameElements = parentElement.querySelectorAll('div, span');
-          for (const element of nameElements) {
-            const text = element.textContent.trim();
-            if (text && text !== 'Profile' && text !== username) {
-              fullName = text;
-              break;
-            }
-          }
-        }
-        
-        profileInfo = {
-          username: username,
-          fullName: fullName
-        };
-        console.log('Found Twitter username from profile image:', profileInfo);
-        return profileInfo;
-      }
-    }
-  } catch (e) {
-    console.log('Error extracting Twitter profile from DOM:', e);
   }
   
-  console.log('Could not find Twitter profile info in any script, meta tags, or DOM elements');
+  console.log('Could not find Twitter profile info using any method.');
+  return null;
+}
+
+function extractLinkedInProfileInfo() {
+  console.log('Starting LinkedIn profile info extraction...');
+  // For LinkedIn, we primarily care about the full name.
+  // The concept of a "username" isn't as central.
+  
+  let fullName = null;
+
+  // Strategy 1: Look for the main profile name element with profile-card-name class
+  const nameElement = document.querySelector('.profile-card-name');
+  if (nameElement && nameElement.textContent.trim()) {
+    fullName = nameElement.textContent.trim();
+  }
+
+  // Strategy 2: Look for the main profile name element, which is usually an h1 within the profile top card.
+  if (!fullName) {
+    const topCard = document.querySelector('.pv-top-card, #profile-content, .scaffold-layout__main'); // Common parent elements for profile
+    if (topCard) {
+      const nameElement = topCard.querySelector('h1');
+      if (nameElement && nameElement.textContent.trim()) {
+        fullName = nameElement.textContent.trim();
+      }
+    }
+  }
+
+  // Strategy 3: Extract from the page title as a strong fallback.
+  // Titles are often "Full Name | LinkedIn"
+  if (!fullName) {
+      const title = document.title;
+      if (title.includes('| LinkedIn')) {
+          fullName = title.split('|')[0].trim();
+      }
+  }
+
+  // Strategy 4: Look for the name in the meta property for profile name
+  if (!fullName) {
+    const metaNameElement = document.querySelector('meta[property="profile:name"]');
+    if (metaNameElement && metaNameElement.content) {
+        fullName = metaNameElement.content.trim();
+    }
+  }
+
+  // Strategy 5: Look for profile picture alt text
+  if (!fullName) {
+      const profilePic = document.querySelector('.pv-top-card-profile-picture__image, .ivm-view-attr__img--centered');
+      if (profilePic && profilePic.alt) {
+          // Alt text is often "View ...'s profile" or just "Full Name"
+          fullName = profilePic.alt.replace(/View|'s profile/gi, '').trim();
+      }
+  }
+
+  if (fullName) {
+    console.log('Found LinkedIn profile info:', fullName);
+    return { fullName: fullName, username: fullName }; // Use fullName for both username and fullName
+  }
+
+  console.log('Could not find LinkedIn profile info.');
   return null;
 }
 
@@ -836,6 +504,8 @@ function extractProfileInfo() {
     profileInfo = extractInstagramProfileInfo();
   } else if (currentUrl.includes('twitter.com') || currentUrl.includes('x.com')) {
     profileInfo = extractTwitterProfileInfo();
+  } else if (currentUrl.includes('linkedin.com')) {
+    profileInfo = extractLinkedInProfileInfo();
   }
   
   if (profileInfo) {
@@ -871,12 +541,14 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
-// Run immediately when script loads
+// Run immediately when script loads - MOVED inside storage.sync.get callback
+/*
 const profileInfo = extractProfileInfo();
 if (profileInfo) {
   currentProfileInfo = profileInfo;
   applyBlurEffect(profileInfo);
 }
+*/
 
 // Also run on DOMContentLoaded as backup
 document.addEventListener('DOMContentLoaded', () => {
@@ -893,19 +565,66 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'updateBlurSettings') {
     blurSettings = request.settings;
     if (currentProfileInfo) {
-      // Re-apply blur with new settings
+      // Revert all existing blurred/replaced elements first
       document.querySelectorAll('.profile-blur, .profile-replaced').forEach(el => {
         const text = el.classList.contains('profile-replaced') ? el.dataset.originalText : el.textContent;
+        if (el.parentNode) {
         el.parentNode.replaceChild(document.createTextNode(text), el);
+        }
       });
+      // Now, re-apply the effect with the new settings
       applyBlurEffect(currentProfileInfo);
     }
   } else if (request.action === 'getProfileInfo') {
+    // Make sure settings are loaded before trying to apply blur
+    if (Object.keys(blurSettings).length === 0) {
+        chrome.storage.sync.get(defaultSettings, (result) => {
+        const currentUrl = window.location.href;
+        
+        let platform = 'instagram'; // Default
+        if (currentUrl.includes('twitter.com') || currentUrl.includes('x.com')) platform = 'twitter';
+        if (currentUrl.includes('linkedin.com')) platform = 'linkedin';
+
+        const platformSettings = result.settings[platform];
+        blurSettings = { ...platformSettings, ...result.settings.global };
+
+        const profileInfo = extractProfileInfo();
+        if (profileInfo) {
+            currentProfileInfo = profileInfo;
+            applyBlurEffect(profileInfo);
+        }
+        sendResponse(profileInfo);
+        });
+        return true; // Keep the message channel open for async response
+    } else {
     const profileInfo = extractProfileInfo();
     if (profileInfo) {
       currentProfileInfo = profileInfo;
       applyBlurEffect(profileInfo);
     }
     sendResponse(profileInfo);
+    }
+  } else if (request.action === 'update') {
+    // This action is triggered by the keyboard shortcut or a manual refresh button.
+    // It's crucial for re-applying settings on dynamic pages.
+
+    // First, revert all existing masked elements to their original text.
+    // This prevents nesting spans and ensures a clean slate.
+    document.querySelectorAll('.profile-blur, .profile-replaced').forEach(el => {
+      const text = el.classList.contains('profile-replaced') ? el.dataset.originalText : el.textContent;
+      if (el.parentNode) {
+        el.parentNode.replaceChild(document.createTextNode(text), el);
+      }
+    });
+
+    // Then, re-run the full extraction and application process.
+    const profileInfo = extractProfileInfo();
+    if (profileInfo) {
+      currentProfileInfo = profileInfo;
+      applyBlurEffect(profileInfo);
+    }
+    
+    // Send a response to confirm the update has been processed.
+    sendResponse({status: 'complete'});
   }
 });
